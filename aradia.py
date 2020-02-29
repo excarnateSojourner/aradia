@@ -5,6 +5,7 @@ import importlib
 import os
 import re
 from sys import argv
+import traceback
 import urllib.parse
 
 # The IP and port on which to serve.
@@ -44,6 +45,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 
 	def do_HEAD(self):
 		self.request_time = self.timestamp()
+		self.parameters = {}
 		super().do_HEAD()
 
 	def do_POST(self):
@@ -71,7 +73,10 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 				request_body = self.rfile.read(int(self.headers.get('content-length'))).decode()
 				self.parameters = urllib.parse.parse_qs(request_body, keep_blank_values=True)
 				module = importlib.import_module(program)
-				response_values = module.main(self)
+				try:
+					response_values = module.main(self)
+				except:
+					self.log_message(traceback.format_exc(limit=10))
 				# Successful response.
 				if response_values[0] < 400:
 					self.send_response(HTTPStatus(response_values[0]))
