@@ -13,7 +13,7 @@ SERVER_ADDRESS = ('192.168.0.19', 5000)
 LIVE_DIR = 'live'
 # All Python programs that handle POST requests should be in this directory. Assumed to be a child of LIVE_DIR.
 POST_DIR = 'post'
-LOG_FILE_PATH = 'log.txt'
+LOG_FILE_PATH = 'log.log'
 # Specifies which request headers will be written to the log file for each request.
 HEADERS_TO_LOG = ['user-agent', 'referer', 'content-type', 'content-length']
 # When a request is logged, the body will be truncated to this length.
@@ -41,7 +41,11 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
 		else:
 			super().do_GET()
-	
+
+	def do_HEAD(self):
+		self.request_time = self.timestamp()
+		super().do_HEAD()
+
 	def do_POST(self):
 		'''
 		Runs Python programs in POST_DIR.
@@ -88,10 +92,9 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 		LOG_SEPARATOR = ' | '
 		message = (LOG_SEPARATOR.join([self.request_time, f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value)]) + '\n'
 		+ LOG_SEPARATOR.join(f'{header}: {self.headers[header]}' for header in HEADERS_TO_LOG if header in self.headers) + '\n'
-		+ LOG_SEPARATOR.join(f'{param}: {str(self.parameters[param])[:LOG_REQUEST_BODY_LEN]}' for param in self.parameters) + '\n'
-		+ '#' * 20)
+		+ LOG_SEPARATOR.join(f'{param}: {str(self.parameters[param])[:LOG_REQUEST_BODY_LEN]}' for param in self.parameters) + '\n')
 		self.log_message(message)
-
+	
 	def log_message(self, message, *args):
 		'''
 		Logs an arbitrary message to the log file.
@@ -103,8 +106,8 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			except TypeError:
 				pass
 		with open(f'../{LOG_FILE_PATH}', 'a') as log_file:
-			log_file.write(f'{message}\n' + ('#' * 20) + '\n')
-	
+			log_file.write(message + '\n' + ('#' * 20) + '\n')
+
 	@staticmethod
 	def timestamp():
 		'''Returns the current time UTC time (with seconds but not milliseconds) in ISO format.'''
