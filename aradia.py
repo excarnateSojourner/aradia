@@ -34,12 +34,17 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 	def do_GET(self):
 		self.request_time = self.timestamp()
 		self.parameters = {}
-		# If a directory with no index.html was requested, reject.
-		if self.path.endswith('/') and not os.path.isfile(self.path[1:] + 'index.html'):
-			self.send_error(HTTPStatus.FORBIDDEN, message='This server does not give directory listings')
-		# If a Python program meant to handle POST requests was requested, reject.
-		elif self.path.startswith(f'/{POST_DIR}/'):
+		# If a Python program meant to produce requests was requested, reject.
+		if self.path.startswith(f'/{SCRIPT_DIR}/'):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
+		# If a directory with no index.html was requested, reject.
+		elif self.path.endswith('/') and not os.path.isfile(self.path[1:] + 'index.html'):
+			self.send_error(HTTPStatus.FORBIDDEN, message='This server does not give directory listings')
+		# If the '.html' has been omitted, add it automatically.
+		elif not os.path.exists(self.path[1:]) and '.' not in self.path.rsplit('/', maxsplit=1)[-1] and os.path.isfile(self.path[1:] + '.html'):
+			self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+			self.send_header('Location', self.path + '.html')
+			self.end_headers()
 		else:
 			super().do_GET()
 
