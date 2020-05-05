@@ -35,7 +35,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 		self.request_time = self.timestamp()
 		self.parameters = {}
 		# If a directory with no index.html was requested, reject.
-		if self.path[-1] == '/' and not os.path.isfile(f'{self.path[1:]}index.html'):
+		if self.path.endswith('/') and not os.path.isfile(self.path[1:] + 'index.html'):
 			self.send_error(HTTPStatus.FORBIDDEN, message='This server does not give directory listings')
 		# If a Python program meant to handle POST requests was requested, reject.
 		elif self.path.startswith(f'/{POST_DIR}/'):
@@ -94,10 +94,13 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
 	
 	def log_request(self, code='-', size='-'):
-		LOG_SEPARATOR = ' | '
-		message = (LOG_SEPARATOR.join([self.request_time, f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value)]) + '\n'
-		+ LOG_SEPARATOR.join(f'{header}: {self.headers[header]}' for header in HEADERS_TO_LOG if header in self.headers) + '\n'
-		+ LOG_SEPARATOR.join(f'{param}: {str(self.parameters[param])[:LOG_REQUEST_BODY_LEN]}' for param in self.parameters) + '\n')
+		log_separator = ' | '
+		# The request_time will not be set if SimpleHTTPRequestHandler.parse_request() encounters an error (because the request is malformed) and calls SimpleHTTPRequestHandler.send_error() directly.
+		if not hasattr(self, 'request_time'):
+			self.request_time = self.timestamp()
+		message = (log_separator.join([self.request_time, f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value)]) + '\n'
+		+ log_separator.join(f'{header}: {self.headers[header]}' for header in HEADERS_TO_LOG if header in self.headers) + '\n'
+		+ log_separator.join(f'{param}: {str(self.parameters[param])[:LOG_REQUEST_MAX_VALUE_LEN]}' for param in self.parameters))
 		self.log_message(message)
 	
 	def log_message(self, message, *args):
