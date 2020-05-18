@@ -31,9 +31,13 @@ def serve():
 			raise SystemExit(0)
 
 class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
-	def do_GET(self):
-		self.request_time = self.timestamp()
+	def __init__(self, *args, **kwargs):
+		self._set_request_time()
 		self.parameters = {}
+		super().__init__(*args, **kwargs)
+	
+	def do_GET(self):
+		self._set_request_time()
 		# If a Python program meant to produce requests was requested, reject.
 		if self.path.startswith(f'/{SCRIPT_DIR}/'):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
@@ -49,8 +53,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			super().do_GET()
 
 	def do_HEAD(self):
-		self.request_time = self.timestamp()
-		self.parameters = {}
+		self._set_request_time()
 		super().do_HEAD()
 
 	def do_POST(self):
@@ -67,43 +70,47 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			1. A short, human-readable description of the error (str), or None.
 			2. A longer description of the error which will be formatted as the response body (str), or None.
 		'''
-		self.request_time = self.timestamp()
-		self.parameters = {}
-		path_match = re.fullmatch(f'(/{POST_DIR}/[a-zA-Z0-9_\\-/]+)\\.py', self.path)
-		if path_match:
-			if os.path.isfile(self.path[1:]):
-				# Even though the working directory is LIVE_DIR, importlib.import_module imports relative to the program that it is called in.
-				program = f'{LIVE_DIR}{path_match[1]}'.replace('/', '.')
-				# It took me *way* too long to realize that read() *needs* a length here.
-				request_body = self.rfile.read(int(self.headers.get('content-length'))).decode()
-				self.parameters = urllib.parse.parse_qs(request_body, keep_blank_values=True)
-				module = importlib.import_module(program)
-				try:
-					response_values = module.main(self)
-				except:
-					self.log_message(traceback.format_exc(limit=10))
-				# Successful response.
-				if response_values[0] < 400:
-					self.send_response(HTTPStatus(response_values[0]))
-					for keyword, value in response_values[1].items():
-						self.send_header(keyword, value)
-					self.end_headers()
-					self.wfile.write(response_values[2].encode())
-				# Error response.
-				else:
-					self.send_error(HTTPStatus(response_values[0]), message=response_values[1], explain=response_values[2])
-			else:
-				self.send_error(HTTPStatus.NOT_FOUND)
-		# Requested file outside of POST_DIR.
-		else:
+
+		last_request = self.request_time
+		self._set_request_time()
+		path_match = re.fullmatch(f'(/{SCRIPT_DIR}/[a-zA-Z0-9_\\-/]+)\\.py', self.path)
+		if (last_request - self.request_time).seconds < 15:
+			self.send_error(HTTPStatus.TOO_MANY_REQUESTS, message='You must wait a minimum of 15 seconds between POST requests')
+		elif not path_match:
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
-	
+		elif not os.path.isfile(self.path[1:]):
+			self.send_error(HTTPStatus.NOT_FOUND)
+		# Good request.
+		else:
+			# Even though the working directory is LIVE_DIR, importlib.import_module imports relative to the program that it is called in.
+			program = f'{LIVE_DIR}{path_match[1]}'.replace('/', '.')
+			request_body = self.rfile.read(int(self.headers.get('content-length'))).decode()
+			self.parameters = urllib.parse.parse_qs(request_body, keep_blank_values=True)
+			module = importlib.import_module(program)
+			try:
+				response_values = module.main(self)
+			except:
+				self.log_message(traceback.format_exc(limit=10))
+			# Successful response.
+			if response_values[0] < 400:
+				self.send_response(HTTPStatus(response_values[0]))
+				for keyword, value in response_values[1].items():
+					self.send_header(keyword, value)
+				self.end_headers()
+				self.wfile.write(response_values[2].encode())
+			# Error response.
+			else:
+				self.send_error(HTTPStatus(response_values[0]), message=response_values[1], explain=response_values[2])
+
 	def log_request(self, code='-', size='-'):
 		log_separator = ' | '
 		# The request_time will not be set if SimpleHTTPRequestHandler.parse_request() encounters an error (because the request is malformed) and calls SimpleHTTPRequestHandler.send_error() directly.
 		if not hasattr(self, 'request_time'):
-			self.request_time = self.timestamp()
-		message = (log_separator.join([self.request_time, f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value)]) + '\n'
+			self._set_request_time()
+		# do_GET() and do_HEAD() above do not set self.parameters.
+		if not hasattr(self, 'parameters'):
+			self.parameters = {}
+		message = (log_separator.join([self.request_time.isoformat().split('.', maxsplit=1)[0], f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value)]) + '\n'
 		+ log_separator.join(f'{header}: {self.headers[header]}' for header in HEADERS_TO_LOG if header in self.headers) + '\n'
 		+ log_separator.join(f'{param}: {str(self.parameters[param])[:LOG_REQUEST_MAX_VALUE_LEN]}' for param in self.parameters))
 		self.log_message(message)
@@ -113,6 +120,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 		Logs an arbitrary message to the log file.
 		If args are given, messages is a str to format, printf-style, with args, and then log. Otherwise, messages is a str to log. The printf-style formatting is supported only because http.server.BaseHTTPRequestHandler.log_message() provides it, and AradiaRequestHandler does not override all methods that call BaseHTTPRequestHandler.log_message(). If args are provided and len(args) does not match the formatting in message, message is logged unformatted.
 		'''
+
 		if args:
 			try:
 				message = message % args
@@ -121,10 +129,13 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 		with open(f'../{LOG_FILE_PATH}', 'a') as log_file:
 			log_file.write(message + '\n' + ('#' * 20) + '\n')
 
-	@staticmethod
-	def timestamp():
+	def send_error(*args, **kwargs):
+		self.set_request_time()
+		super().send_error(*args, **kwargs)
+
+	def _set_request_time(self):
 		'''Returns the current time UTC time (with seconds but not milliseconds) in ISO format.'''
-		return datetime.datetime.now(tz=datetime.timezone.utc).isoformat().split('.', maxsplit=1)[0]
+		self.request_time = datetime.datetime.now(tz=datetime.timezone.utc)
 
 if __name__ == '__main__':
 	serve()
