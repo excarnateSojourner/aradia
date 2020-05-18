@@ -90,6 +90,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			try:
 				response_values = module.main(self)
 			except:
+				response_values = 500, None, None
 				self.log_message(traceback.format_exc(limit=10))
 			# Successful response.
 			if response_values[0] < 400:
@@ -104,12 +105,6 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 
 	def log_request(self, code='-', size='-'):
 		log_separator = ' | '
-		# The request_time will not be set if SimpleHTTPRequestHandler.parse_request() encounters an error (because the request is malformed) and calls SimpleHTTPRequestHandler.send_error() directly.
-		if not hasattr(self, 'request_time'):
-			self._set_request_time()
-		# do_GET() and do_HEAD() above do not set self.parameters.
-		if not hasattr(self, 'parameters'):
-			self.parameters = {}
 		message = (log_separator.join([self.request_time.isoformat().split('.', maxsplit=1)[0], f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value)]) + '\n'
 		+ log_separator.join(f'{header}: {self.headers[header]}' for header in HEADERS_TO_LOG if header in self.headers) + '\n'
 		+ log_separator.join(f'{param}: {str(self.parameters[param])[:LOG_REQUEST_MAX_VALUE_LEN]}' for param in self.parameters))
@@ -129,8 +124,8 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 		with open(f'../{LOG_FILE_PATH}', 'a') as log_file:
 			log_file.write(message + '\n' + ('#' * 20) + '\n')
 
-	def send_error(*args, **kwargs):
-		self.set_request_time()
+	def send_error(self, *args, **kwargs):
+		self._set_request_time()
 		super().send_error(*args, **kwargs)
 
 	def _set_request_time(self):
