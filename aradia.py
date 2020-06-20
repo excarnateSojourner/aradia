@@ -1,8 +1,11 @@
+# Aradia
+
 import datetime
 import http.server as hs
 from http import HTTPStatus
 import importlib
 import os
+import os.path
 import re
 from sys import argv
 import traceback
@@ -10,10 +13,13 @@ import urllib.parse
 
 # The IP and port on which to serve.
 SERVER_ADDRESS = ('192.168.0.19', 5000)
-# The server should only serve files in this directory.
+# All other paths are relative to the location of this program.
+CWD = os.path.dirname(os.path.realpath(__file__))
+# The server should only serve files and run scripts in this directory.
 LIVE_DIR = 'live'
 # All Python programs that handle POST requests should be in this directory. Assumed to be a child of LIVE_DIR.
-POST_DIR = 'post'
+SCRIPT_DIR = 'scripts'
+# Assumed to be a sibling of this program.
 LOG_FILE_PATH = 'log.log'
 # Specifies which request headers will be written to the log file for each request.
 HEADERS_TO_LOG = ['user-agent', 'referer', 'content-type', 'content-length']
@@ -21,7 +27,7 @@ HEADERS_TO_LOG = ['user-agent', 'referer', 'content-type', 'content-length']
 LOG_REQUEST_BODY_LEN = 200
 
 def serve():
-	os.chdir(LIVE_DIR)
+	os.chdir(f'{CWD}/{LIVE_DIR}')
 	with hs.HTTPServer(SERVER_ADDRESS, AradiaRequestHandler) as httpd:
 		print(f'Serving {LIVE_DIR}/ at {SERVER_ADDRESS[0]}:{SERVER_ADDRESS[1]}.')
 		try:
@@ -31,13 +37,7 @@ def serve():
 			raise SystemExit(0)
 
 class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
-	def __init__(self, *args, **kwargs):
-		self._set_request_time()
-		self.parameters = {}
-		super().__init__(*args, **kwargs)
-	
 	def do_GET(self):
-		self._set_request_time()
 		# If a Python program meant to produce requests was requested, reject.
 		if self.path.startswith(f'/{SCRIPT_DIR}/'):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
@@ -51,10 +51,6 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			self.end_headers()
 		else:
 			super().do_GET()
-
-	def do_HEAD(self):
-		self._set_request_time()
-		super().do_HEAD()
 
 	def do_POST(self):
 		'''
@@ -71,10 +67,8 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			2. A longer description of the error which will be formatted as the response body (str), or None.
 		'''
 
-		last_request = self.request_time
-		self._set_request_time()
 		path_match = re.fullmatch(f'(/{SCRIPT_DIR}/[a-zA-Z0-9_\\-/]+)\\.py', self.path)
-		if (last_request - self.request_time).seconds < 15:
+		if (self._now() - getattr(self, 'request_time', datetime.datetime.min)).seconds < 15:
 			self.send_error(HTTPStatus.TOO_MANY_REQUESTS, message='You must wait a minimum of 15 seconds between POST requests')
 		elif not path_match:
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
@@ -82,6 +76,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			self.send_error(HTTPStatus.NOT_FOUND)
 		# Good request.
 		else:
+			self.request_time = self._now()
 			# Even though the working directory is LIVE_DIR, importlib.import_module imports relative to the program that it is called in.
 			program = f'{LIVE_DIR}{path_match[1]}'.replace('/', '.')
 			request_body = self.rfile.read(int(self.headers.get('content-length'))).decode()
@@ -105,9 +100,16 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 
 	def log_request(self, code='-', size='-'):
 		log_separator = ' | '
-		message = (log_separator.join([self.request_time.isoformat().split('.', maxsplit=1)[0], f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value)]) + '\n'
-		+ log_separator.join(f'{header}: {self.headers[header]}' for header in HEADERS_TO_LOG if header in self.headers) + '\n'
-		+ log_separator.join(f'{param}: {str(self.parameters[param])[:LOG_REQUEST_MAX_VALUE_LEN]}' for param in self.parameters))
+		time_str = getattr(self, 'request_time', self._now()).isoformat()
+		message = log_separator.join((time_str[:time_str.index('.')], f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value))) + '\n'
+		try:
+			message += log_separator.join(f'{header}: {value}' for header, value in self.headers.items() if header in HEADERS_TO_LOG) + '\n'
+		except AttributeError:
+			pass
+		try:
+			message += log_separator.join(f'{param}: {value[:LOG_REQUEST_MAX_VALUE_LEN]}' for param, value in self.parameters.items())
+		except AttributeError:
+			pass
 		self.log_message(message)
 	
 	def log_message(self, message, *args):
@@ -124,13 +126,11 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 		with open(f'../{LOG_FILE_PATH}', 'a') as log_file:
 			log_file.write(message + '\n' + ('#' * 20) + '\n')
 
-	def send_error(self, *args, **kwargs):
-		self._set_request_time()
-		super().send_error(*args, **kwargs)
-
-	def _set_request_time(self):
-		'''Returns the current time UTC time (with seconds but not milliseconds) in ISO format.'''
-		self.request_time = datetime.datetime.now(tz=datetime.timezone.utc)
+	@staticmethod
+	def _now():
+		'''Returns the current UTC time.'''
+		# .replace() makes the datetime naive (timezoneless) so we can subtract datetime.datetime.min from it.
+		return datetime.datetime.now(tz=datetime.timezone.utc).replace(tzinfo=None)
 
 if __name__ == '__main__':
 	serve()
