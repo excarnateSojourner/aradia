@@ -8,6 +8,7 @@ import os
 import os.path
 import re
 from sys import argv
+import time
 import traceback
 import urllib.parse
 
@@ -20,7 +21,8 @@ LIVE_DIR = 'live'
 # All Python programs that handle POST requests should be in this directory. Assumed to be a child of LIVE_DIR.
 SCRIPT_DIR = 'scripts'
 # Assumed to be a sibling of this program.
-LOG_FILE_PATH = 'log.log'
+LOG_PATH = 'log.log'
+LAST_POST_TIME_PATH = 'last_post_time.int'
 # Specifies which request headers will be written to the log file for each request.
 HEADERS_TO_LOG = ['user-agent', 'referer', 'content-type', 'content-length']
 # When a request is logged, the body will be truncated to this length.
@@ -43,7 +45,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
 		# If a directory with no index.html was requested, reject.
 		elif self.path.endswith('/') and not os.path.isfile(self.path[1:] + 'index.html'):
-			self.send_error(HTTPStatus.FORBIDDEN, message='This server does not give directory listings')
+			self.send_error(HTTPStatus.FORBIDDEN, explain='This server does not give directory listings')
 		# If the '.html' has been omitted, add it automatically.
 		elif not os.path.exists(self.path[1:]) and '.' not in self.path.rsplit('/', maxsplit=1)[-1] and os.path.isfile(self.path[1:] + '.html'):
 			self.send_response(HTTPStatus.MOVED_PERMANENTLY)
@@ -54,8 +56,8 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 
 	def do_POST(self):
 		'''
-		Runs Python programs in POST_DIR.
-		The parameters in the request body are parsed into a dict of lists by urllib.parse.parse_qs(keep_blank_values=True) and saved as self.parameters. This entire AradiaRequestHandler is then passed to the Python program's main() function. (This gives the program access to things like the client_address, headers.get('referer'), and the request_time in addition to the parameters sent in the request.) The Python program is *not* expected to modify any part of this handler, nor call any non-static methods of this handler, nor write directly to self.wfile.
+		Runs Python programs in SCRIPT_DIR.
+		The parameters in the request body are parsed into a dict of lists by urllib.parse.parse_qs(keep_blank_values=True) and saved as self.parameters. This entire AradiaRequestHandler is then passed to the Python program's main() function. (This gives the program access to things like the client_address, headers.get('referer'), and the last_post_time in addition to the parameters sent in the request.) The Python program is *not* expected to modify any part of this handler, nor call any non-static methods of this handler, nor write directly to self.wfile.
 		The Python program is expected to return a 3-tuple representing either a successful response or an error response.
 		0. A successful response consists of:
 			0. The HTTP status code, either 1xx, 2xx, or 3xx, to include in the response (int).
@@ -63,20 +65,22 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			2. The response body (str). May be the empty string, but *not* None.
 		1. An error response consists of:
 			0. The HTTP status code, either 4xx or 5xx, to include in the response (int).
-			1. A short, human-readable description of the error (str), or None.
-			2. A longer description of the error which will be formatted as the response body (str), or None.
+			1. A description of the error which will be formatted as the response body (str), or None.
 		'''
 
 		path_match = re.fullmatch(f'(/{SCRIPT_DIR}/[a-zA-Z0-9_\\-/]+)\\.py', self.path)
-		if (self._now() - getattr(self, 'request_time', datetime.datetime.min)).seconds < 15:
-			self.send_error(HTTPStatus.TOO_MANY_REQUESTS, message='You must wait a minimum of 15 seconds between POST requests')
+		with open('../' + LAST_POST_TIME_PATH) as last_post_time_file:
+			last_post_time = int(last_post_time_file.read()[:-1])
+		if int(time.time()) - last_post_time < 15:
+			self.send_error(HTTPStatus.TOO_MANY_REQUESTS, explain='You must wait a minimum of 15 seconds between POST requests. Use your browser\'s back button and try again after waiting')
 		elif not path_match:
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
 		elif not os.path.isfile(self.path[1:]):
 			self.send_error(HTTPStatus.NOT_FOUND)
 		# Good request.
 		else:
-			self.request_time = self._now()
+			with open('../' + LAST_POST_TIME_PATH, 'w') as last_post_time_file:
+				last_post_time_file.write(str(int(time.time())) + '\n')
 			# Even though the working directory is LIVE_DIR, importlib.import_module imports relative to the program that it is called in.
 			program = f'{LIVE_DIR}{path_match[1]}'.replace('/', '.')
 			request_body = self.rfile.read(int(self.headers.get('content-length'))).decode()
@@ -96,11 +100,11 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 				self.wfile.write(response_values[2].encode())
 			# Error response.
 			else:
-				self.send_error(HTTPStatus(response_values[0]), message=response_values[1], explain=response_values[2])
+				self.send_error(HTTPStatus(response_values[0]), explain=response_values[1])
 
 	def log_request(self, code='-', size='-'):
 		log_separator = ' | '
-		time_str = getattr(self, 'request_time', self._now()).isoformat()
+		time_str = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 		message = log_separator.join((time_str[:time_str.index('.')], f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value))) + '\n'
 		try:
 			message += log_separator.join(f'{header}: {value}' for header, value in self.headers.items() if header in HEADERS_TO_LOG) + '\n'
@@ -123,14 +127,8 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 				message = message % args
 			except TypeError:
 				pass
-		with open(f'../{LOG_FILE_PATH}', 'a') as log_file:
-			log_file.write(message + '\n' + ('#' * 20) + '\n')
-
-	@staticmethod
-	def _now():
-		'''Returns the current UTC time.'''
-		# .replace() makes the datetime naive (timezoneless) so we can subtract datetime.datetime.min from it.
-		return datetime.datetime.now(tz=datetime.timezone.utc).replace(tzinfo=None)
+		with open('../' + LOG_PATH, 'a') as log_file:
+			log_file.write(f'{message}\n{"#" * 20}\n')
 
 if __name__ == '__main__':
 	serve()
