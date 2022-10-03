@@ -7,7 +7,8 @@ import importlib
 import os
 import os.path
 import re
-from sys import argv
+from request import HTTPResponse
+import sys
 import time
 import traceback
 import urllib.parse
@@ -27,6 +28,9 @@ LAST_POST_TIME_PATH = 'last_post_time.int'
 HEADERS_TO_LOG = ['user-agent', 'referer', 'content-type', 'content-length']
 # When a request is logged, the body will be truncated to this length.
 LOG_REQUEST_BODY_LEN = 200
+
+GET_EXCEPTIONS = {'favicon.ico': HTTPResponse(HTTPStatus.GONE)}
+POST_EXCEPTIONS = {}
 
 def serve():
 	os.chdir(f'{CWD}/{LIVE_DIR}')
@@ -57,15 +61,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 	def do_POST(self):
 		'''
 		Runs Python programs in SCRIPT_DIR.
-		The parameters in the request body are parsed into a dict of lists by urllib.parse.parse_qs(keep_blank_values=True) and saved as self.parameters. This entire AradiaRequestHandler is then passed to the Python program's main() function. (This gives the program access to things like the client_address, headers.get('referer'), and the last_post_time in addition to the parameters sent in the request.) The Python program is *not* expected to modify any part of this handler, nor call any non-static methods of this handler, nor write directly to self.wfile.
-		The Python program is expected to return a 3-tuple representing either a successful response or an error response.
-		0. A successful response consists of:
-			0. The HTTP status code, either 1xx, 2xx, or 3xx, to include in the response (int).
-			1. Headers to include in the response (dict).
-			2. The response body (str). May be the empty string, but *not* None.
-		1. An error response consists of:
-			0. The HTTP status code, either 4xx or 5xx, to include in the response (int).
-			1. A description of the error which will be formatted as the response body (str), or None.
+		The parameters in the request body are parsed into a dict of lists by urllib.parse.parse_qs(keep_blank_values=True) and saved as self.parameters. This entire AradiaRequestHandler is then passed to the Python program's main() function. (This gives the program access to things like the client_address, headers.get('referer'), and the last_post_time in addition to the parameters sent in the request.) The Python program is *not* expected to modify any part of this handler, nor call any non-static methods of this handler, nor write directly to self.wfile. Doing so results in undefined behaviour.
 		'''
 
 		path_match = re.fullmatch(f'(/{SCRIPT_DIR}/[a-zA-Z0-9_\\-/]+)\\.py', self.path)
@@ -115,7 +111,7 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 		except AttributeError:
 			pass
 		self.log_message(message)
-	
+
 	def log_message(self, message, *args):
 		'''
 		Logs an arbitrary message to the log file.
