@@ -33,6 +33,12 @@ def main():
 	args = parser.parse_args()
 
 	os.chdir(f'{CWD}/{args.live_path}')
+	if not os.path.exists(args.scripts_path):
+		os.mkdir(args.scripts_path)
+	full_time_path = '../' + args.last_post_time_path
+	if not os.path.exists(full_time_path):
+		with open(full_time_path, 'w') as time_file:
+			print('0', file=time_file)
 	request_handler_args = vars(args).copy()
 	for arg in ['address', 'port']:
 		del request_handler_args[arg]
