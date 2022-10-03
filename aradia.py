@@ -1,7 +1,9 @@
 # Aradia
 
+import argparse
 import datetime
-import http.server as hs
+import functools
+import http.server
 from http import HTTPStatus
 import importlib
 import os
@@ -13,39 +15,46 @@ import time
 import traceback
 import urllib.parse
 
-# The IP and port on which to serve.
-SERVER_ADDRESS = ('192.168.0.19', 5000)
-# All other paths are relative to the location of this program.
-CWD = os.path.dirname(os.path.realpath(__file__))
-# The server should only serve files and run scripts in this directory.
-LIVE_DIR = 'live'
-# All Python programs that handle POST requests should be in this directory. Assumed to be a child of LIVE_DIR.
-SCRIPT_DIR = 'scripts'
-# Assumed to be a sibling of this program.
-LOG_PATH = 'log.log'
-LAST_POST_TIME_PATH = 'last_post_time.int'
-# Specifies which request headers will be written to the log file for each request.
-HEADERS_TO_LOG = ['user-agent', 'referer', 'content-type', 'content-length']
-# When a request is logged, the body will be truncated to this length.
-LOG_REQUEST_BODY_LEN = 200
-
 GET_EXCEPTIONS = {'favicon.ico': HTTPResponse(HTTPStatus.GONE)}
 POST_EXCEPTIONS = {}
+DEFAULT_HEADERS = ['user-agent', 'referer', 'content-type', 'content-length']
+CWD = os.path.dirname(os.path.realpath(__file__))
 
-def serve():
-	os.chdir(f'{CWD}/{LIVE_DIR}')
-	with hs.HTTPServer(SERVER_ADDRESS, AradiaRequestHandler) as httpd:
-		print(f'Serving {LIVE_DIR}/ at {SERVER_ADDRESS[0]}:{SERVER_ADDRESS[1]}.')
+def main():
+	parser = argparse.ArgumentParser()
+	parser.add_argument('address', help='The IP address to serve on.')
+	parser.add_argument('port', type=int, help='The port to serve on.')
+	parser.add_argument('-l', '--live-path', default='live', help='The path of the directory containing the files to serve. This directory must exist.')
+	parser.add_argument('-s', '--scripts-path', default='scripts', help='The subpath of the directory of scripts that should handle post requests, within the directory of files to serve.')
+	parser.add_argument('-o', '--log-path', default='aradia.log', help='The path of the log file in which to record requests.')
+	parser.add_argument('-p', '--last-post-time-path', default='last_post_time.int', help='The path of the file in which to save the time of the last POST request.')
+	parser.add_argument('-e', '--log-headers', nargs='+', default=DEFAULT_HEADERS, help='The list of request headers to log.')
+	parser.add_argument('-r', '--log-request-len', default=200, type=int, help='The length to which requests should be truncated when logging them.')
+	args = parser.parse_args()
+
+	os.chdir(f'{CWD}/{args.live_path}')
+	request_handler_args = vars(args).copy()
+	for arg in ['address', 'port']:
+		del request_handler_args[arg]
+	with http.server.HTTPServer((args.address, args.port), functools.partial(AradiaRequestHandler, **request_handler_args)) as httpd:
+		print(f'Serving {args.live_path}/ at {args.address}:{args.port}.')
 		try:
 			httpd.serve_forever()
 		except KeyboardInterrupt:
 			print('\nExiting.')
 			raise SystemExit(0)
 
-class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
+class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
+	def __init__(self, request, client_address, server, live_path='live', scripts_path='scripts', log_path='aradia.log', last_post_time_path='last_post_time.int', log_headers=DEFAULT_HEADERS, log_request_len=200):
+		self.live_path = live_path
+		self.scripts_path = scripts_path
+		self.log_path = log_path
+		self.last_post_time_path = last_post_time_path
+		super().__init__(request, client_address, server)
+
 	def do_GET(self):
 		# If a Python program meant to produce requests was requested, reject.
-		if self.path.startswith(f'/{SCRIPT_DIR}/'):
+		if self.path.startswith(f'/{self.scripts_path}/'):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
 		# If a directory with no index.html was requested, reject.
 		elif self.path.endswith('/') and not os.path.isfile(self.path[1:] + 'index.html'):
@@ -60,12 +69,12 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 
 	def do_POST(self):
 		'''
-		Runs Python programs in SCRIPT_DIR.
+		Runs Python programs in self.scripts_path.
 		The parameters in the request body are parsed into a dict of lists by urllib.parse.parse_qs(keep_blank_values=True) and saved as self.parameters. This entire AradiaRequestHandler is then passed to the Python program's main() function. (This gives the program access to things like the client_address, headers.get('referer'), and the last_post_time in addition to the parameters sent in the request.) The Python program is *not* expected to modify any part of this handler, nor call any non-static methods of this handler, nor write directly to self.wfile. Doing so results in undefined behaviour.
 		'''
 
-		path_match = re.fullmatch(f'(/{SCRIPT_DIR}/[a-zA-Z0-9_\\-/]+)\\.py', self.path)
-		with open('../' + LAST_POST_TIME_PATH) as last_post_time_file:
+		path_match = re.fullmatch(f'(/{self.scripts_path}/[a-zA-Z0-9_\\-/]+)\\.py', self.path)
+		with open('../' + self.last_post_time_path) as last_post_time_file:
 			last_post_time = int(last_post_time_file.read()[:-1])
 		if int(time.time()) - last_post_time < 15:
 			self.send_error(HTTPStatus.TOO_MANY_REQUESTS, explain='You must wait a minimum of 15 seconds between POST requests. Use your browser\'s back button and try again after waiting')
@@ -75,10 +84,10 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 			self.send_error(HTTPStatus.NOT_FOUND)
 		# Good request.
 		else:
-			with open('../' + LAST_POST_TIME_PATH, 'w') as last_post_time_file:
+			with open('../' + self.last_post_time_path, 'w') as last_post_time_file:
 				last_post_time_file.write(str(int(time.time())) + '\n')
-			# Even though the working directory is LIVE_DIR, importlib.import_module imports relative to the program that it is called in.
-			program = f'{LIVE_DIR}{path_match[1]}'.replace('/', '.')
+			# Even though the working directory is self.live_path, importlib.import_module imports relative to the program that it is called in.
+			program = f'{self.live_path}{path_match[1]}'.replace('/', '.')
 			request_body = self.rfile.read(int(self.headers.get('content-length'))).decode()
 			self.parameters = urllib.parse.parse_qs(request_body, keep_blank_values=True)
 			module = importlib.import_module(program)
@@ -103,11 +112,11 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 		time_str = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 		message = log_separator.join((time_str[:time_str.index('.')], f'{self.client_address[0]}:{self.client_address[1]}', self.requestline, str(code.value))) + '\n'
 		try:
-			message += log_separator.join(f'{header}: {value}' for header, value in self.headers.items() if header in HEADERS_TO_LOG) + '\n'
+			message += log_separator.join(f'{header}: {value}' for header, value in self.headers.items() if header in self.log_headers) + '\n'
 		except AttributeError:
 			pass
 		try:
-			message += log_separator.join(f'{param}: {value[:LOG_REQUEST_MAX_VALUE_LEN]}' for param, value in self.parameters.items())
+			message += log_separator.join(f'{param}: {value[:self.log_request_len]}' for param, value in self.parameters.items())
 		except AttributeError:
 			pass
 		self.log_message(message)
@@ -123,8 +132,8 @@ class AradiaRequestHandler(hs.SimpleHTTPRequestHandler):
 				message = message % args
 			except TypeError:
 				pass
-		with open('../' + LOG_PATH, 'a') as log_file:
+		with open('../' + self.log_path, 'a') as log_file:
 			log_file.write(f'{message}\n{"#" * 20}\n')
 
 if __name__ == '__main__':
-	serve()
+	main()
