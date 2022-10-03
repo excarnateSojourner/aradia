@@ -1,3 +1,8 @@
+aradia.log
+last_post_time.int
+
+# Python
 __pycache__/
-# Vim swap files.
+
+# Vim swap files
 [._]*.swp
