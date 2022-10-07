@@ -19,6 +19,7 @@ GET_EXCEPTIONS = {'favicon.ico': HTTPResponse(HTTPStatus.GONE)}
 POST_EXCEPTIONS = {}
 DEFAULT_HEADERS = ['user-agent', 'referer', 'content-type', 'content-length']
 CWD = os.path.dirname(os.path.realpath(__file__))
+UP = os.path.pardir + os.path.sep
 
 def main():
 	parser = argparse.ArgumentParser()
@@ -32,18 +33,16 @@ def main():
 	parser.add_argument('-r', '--log-request-len', default=200, type=int, help='The length to which requests should be truncated when logging them.')
 	args = parser.parse_args()
 
-	os.chdir(f'{CWD}/{args.live_path}')
+	os.chdir(CWD + os.path.sep + args.live_path)
 	if not os.path.exists(args.scripts_path):
 		os.mkdir(args.scripts_path)
-	full_time_path = '../' + args.last_post_time_path
+	full_time_path = UP + args.last_post_time_path
 	if not os.path.exists(full_time_path):
 		with open(full_time_path, 'w') as time_file:
 			print('0', file=time_file)
-	request_handler_args = vars(args).copy()
-	for arg in ['address', 'port']:
-		del request_handler_args[arg]
+	request_handler_args = {k: v for k, v in vars(args).items() if k not in ['address', 'port']}
 	with http.server.HTTPServer((args.address, args.port), functools.partial(AradiaRequestHandler, **request_handler_args)) as httpd:
-		print(f'Serving {args.live_path}/ at {args.address}:{args.port}.')
+		print(f'Serving {args.live_path}{os.path.sep} at {args.address}:{args.port}.')
 		try:
 			httpd.serve_forever()
 		except KeyboardInterrupt:
@@ -59,16 +58,18 @@ class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
 		super().__init__(request, client_address, server)
 
 	def do_GET(self):
+		# Remove initial slash.
+		path = self.path[1:]
 		# If a Python program meant to produce requests was requested, reject.
-		if self.path.startswith(f'/{self.scripts_path}/'):
+		if os.path.samefile(os.path.dirname(path), self.scripts_path):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
 		# If a directory with no index.html was requested, reject.
-		elif self.path.endswith('/') and not os.path.isfile(self.path[1:] + 'index.html'):
+		elif os.path.isdir(path) and not os.path.isfile(os.path.join(path, 'index.html')):
 			self.send_error(HTTPStatus.FORBIDDEN, explain='This server does not give directory listings')
-		# If the '.html' has been omitted, add it automatically.
-		elif not os.path.exists(self.path[1:]) and '.' not in self.path.rsplit('/', maxsplit=1)[-1] and os.path.isfile(self.path[1:] + '.html'):
+		# If the '.html' has been omitted, add it automatically and redirect.
+		elif not os.path.exists(path) and not os.path.splitext(os.path)[1] and os.path.isfile(path + '.html'):
 			self.send_response(HTTPStatus.MOVED_PERMANENTLY)
-			self.send_header('Location', self.path + '.html')
+			self.send_header('Location', path + '.html')
 			self.end_headers()
 		else:
 			super().do_GET()
@@ -79,21 +80,23 @@ class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
 		The parameters in the request body are parsed into a dict of lists by urllib.parse.parse_qs(keep_blank_values=True) and saved as self.parameters. This entire AradiaRequestHandler is then passed to the Python program's main() function. (This gives the program access to things like the client_address, headers.get('referer'), and the last_post_time in addition to the parameters sent in the request.) The Python program is *not* expected to modify any part of this handler, nor call any non-static methods of this handler, nor write directly to self.wfile. Doing so results in undefined behaviour.
 		'''
 
-		path_match = re.fullmatch(f'(/{self.scripts_path}/[a-zA-Z0-9_\\-/]+)\\.py', self.path)
-		with open('../' + self.last_post_time_path) as last_post_time_file:
+		# Remove initial slash.
+		self.path = path[1:]
+		path_match = re.fullmatch(f'({self.scripts_path}{os.path.sep}[a-zA-Z0-9_\\-{os.path.sep}]+)\\.py', path)
+		with open(UP + self.last_post_time_path) as last_post_time_file:
 			last_post_time = int(last_post_time_file.read()[:-1])
 		if int(time.time()) - last_post_time < 15:
 			self.send_error(HTTPStatus.TOO_MANY_REQUESTS, explain='You must wait a minimum of 15 seconds between POST requests. Use your browser\'s back button and try again after waiting')
 		elif not path_match:
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
-		elif not os.path.isfile(self.path[1:]):
+		elif not os.path.isfile(path):
 			self.send_error(HTTPStatus.NOT_FOUND)
 		# Good request.
 		else:
-			with open('../' + self.last_post_time_path, 'w') as last_post_time_file:
+			with open(UP + self.last_post_time_path, 'w') as last_post_time_file:
 				last_post_time_file.write(str(int(time.time())) + '\n')
 			# Even though the working directory is self.live_path, importlib.import_module imports relative to the program that it is called in.
-			program = f'{self.live_path}{path_match[1]}'.replace('/', '.')
+			program = f'{self.live_path}{path_match[1]}'.replace(os.path.sep, '.')
 			request_body = self.rfile.read(int(self.headers.get('content-length'))).decode()
 			self.parameters = urllib.parse.parse_qs(request_body, keep_blank_values=True)
 			module = importlib.import_module(program)
@@ -130,15 +133,15 @@ class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
 	def log_message(self, message, *args):
 		'''
 		Logs an arbitrary message to the log file.
-		If args are given, messages is a str to format, printf-style, with args, and then log. Otherwise, messages is a str to log. The printf-style formatting is supported only because http.server.BaseHTTPRequestHandler.log_message() provides it, and AradiaRequestHandler does not override all methods that call BaseHTTPRequestHandler.log_message(). If args are provided and len(args) does not match the formatting in message, message is logged unformatted.
+		If args are given, messages is a str to format using str.format() on args, and then log. Otherwise, messages is a str to log. The printf-style formatting is supported only because http.server.BaseHTTPRequestHandler.log_message() provides it, and AradiaRequestHandler does not override all methods that call BaseHTTPRequestHandler.log_message(). If args are provided and len(args) does not match the formatting in message, message is logged unformatted.
 		'''
 
 		if args:
 			try:
-				message = message % args
+				message = message.format(args)
 			except TypeError:
 				pass
-		with open('../' + self.log_path, 'a') as log_file:
+		with open(UP + self.log_path, 'a') as log_file:
 			log_file.write(f'{message}\n{"#" * 20}\n')
 
 if __name__ == '__main__':
