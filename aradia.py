@@ -9,13 +9,14 @@ import importlib
 import os
 import os.path
 import re
-from request import HTTPResponse
 import sys
 import time
 import traceback
 import urllib.parse
 
-GET_EXCEPTIONS = {'favicon.ico': HTTPResponse(HTTPStatus.GONE)}
+from response import Response
+
+GET_EXCEPTIONS = {'favicon.ico': Response(HTTPStatus.GONE)}
 POST_EXCEPTIONS = {}
 DEFAULT_HEADERS = ['user-agent', 'referer', 'content-type', 'content-length']
 CWD = os.path.dirname(os.path.realpath(__file__))
@@ -60,28 +61,31 @@ class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
 	def do_GET(self):
 		# Remove initial slash.
 		path = self.path[1:]
+		if path in GET_EXCEPTIONS:
+			self.send(GET_EXCEPTIONS[path])
 		# If a Python program meant to produce requests was requested, reject.
-		if os.path.samefile(os.path.dirname(path), self.scripts_path):
+		elif os.path.exists(path) and os.path.samefile(os.path.dirname(path), self.scripts_path):
 			self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
 		# If a directory with no index.html was requested, reject.
-		elif os.path.isdir(path) and not os.path.isfile(os.path.join(path, 'index.html')):
+		elif (os.path.isdir(path) or not path) and not os.path.isfile(os.path.join(path, 'index.html')):
 			self.send_error(HTTPStatus.FORBIDDEN, explain='This server does not give directory listings')
 		# If the '.html' has been omitted, add it automatically and redirect.
-		elif not os.path.exists(path) and not os.path.splitext(os.path)[1] and os.path.isfile(path + '.html'):
-			self.send_response(HTTPStatus.MOVED_PERMANENTLY)
-			self.send_header('Location', path + '.html')
-			self.end_headers()
+		elif not os.path.exists(path) and not os.path.splitext(path)[1] and os.path.isfile(path + '.html'):
+			self.send(Response(HTTPStatus.MOVED_PERMANENTLY, {'Location': path + '.html'}))
 		else:
 			super().do_GET()
 
 	def do_POST(self):
 		'''
 		Runs Python programs in self.scripts_path.
-		The parameters in the request body are parsed into a dict of lists by urllib.parse.parse_qs(keep_blank_values=True) and saved as self.parameters. This entire AradiaRequestHandler is then passed to the Python program's main() function. (This gives the program access to things like the client_address, headers.get('referer'), and the last_post_time in addition to the parameters sent in the request.) The Python program is *not* expected to modify any part of this handler, nor call any non-static methods of this handler, nor write directly to self.wfile. Doing so results in undefined behaviour.
+		The parameters in the request body are parsed into a dict of lists and saved as self.parameters. This entire AradiaRequestHandler is then passed to the program's main() function. (This gives the program access to things like the client_address, headers.get('referer'), and the last_post_time in addition to the parameters sent in the request.) If the program is modifies any part of this handler (including by calling one of its non-static methods), undefined behaviour will occur.
+		The Python program is expected to return a Response (as defined in response.py).
 		'''
 
 		# Remove initial slash.
-		self.path = path[1:]
+		path = self.path[1:]
+		if path in POST_EXCEPTIONS:
+			self.send(POST_EXCEPTIONS[path])
 		path_match = re.fullmatch(f'({self.scripts_path}{os.path.sep}[a-zA-Z0-9_\\-{os.path.sep}]+)\\.py', path)
 		with open(UP + self.last_post_time_path) as last_post_time_file:
 			last_post_time = int(last_post_time_file.read()[:-1])
@@ -96,25 +100,26 @@ class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
 			with open(UP + self.last_post_time_path, 'w') as last_post_time_file:
 				last_post_time_file.write(str(int(time.time())) + '\n')
 			# Even though the working directory is self.live_path, importlib.import_module imports relative to the program that it is called in.
-			program = f'{self.live_path}{path_match[1]}'.replace(os.path.sep, '.')
+			program = f'{self.live_path}{os.path.sep}{path_match[1]}'.replace(os.path.sep, '.')
 			request_body = self.rfile.read(int(self.headers.get('content-length'))).decode()
 			self.parameters = urllib.parse.parse_qs(request_body, keep_blank_values=True)
 			module = importlib.import_module(program)
 			try:
-				response_values = module.main(self)
+				response = module.main(self)
 			except:
-				response_values = 500, None, None
+				response = Response(500, body='The program called to handle the request raised an exception.')
 				self.log_message(traceback.format_exc(limit=10))
-			# Successful response.
-			if response_values[0] < 400:
-				self.send_response(HTTPStatus(response_values[0]))
-				for keyword, value in response_values[1].items():
-					self.send_header(keyword, value)
-				self.end_headers()
-				self.wfile.write(response_values[2].encode())
-			# Error response.
-			else:
-				self.send_error(HTTPStatus(response_values[0]), explain=response_values[1])
+			self.send(response)
+
+	def send(self, res):
+		if res.successful:
+			self.send_response(http.HTTPStatus(res.status))
+			for key, val in res.headers.items():
+				self.send_header(key, val)
+			self.end_headers()
+			self.wfile.write(res.body.encode())
+		else:
+			self.send_error(res.status, explain=res.body)
 
 	def log_request(self, code='-', size='-'):
 		log_separator = ' | '

@@ -1,2 +1,4 @@
+from response import Response
+
 def main(request_handler):
-	return 200, {}, request_handler.parameters['message'][0]
+	return Response(200, body=request_handler.parameters['message'][0])
