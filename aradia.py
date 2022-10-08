@@ -19,6 +19,7 @@ from response import Response
 GET_EXCEPTIONS = {'favicon.ico': Response(HTTPStatus.GONE)}
 POST_EXCEPTIONS = {}
 DEFAULT_HEADERS = ['user-agent', 'referer', 'content-type', 'content-length']
+POST_WAIT_DEFAULT = 10
 SERVER_ONLY_ARGS = ['address', 'port']
 
 def main():
@@ -29,6 +30,7 @@ def main():
 	parser.add_argument('-s', '--scripts-path', default='scripts', help='The subpath of the directory of scripts that should handle post requests, within the directory of files to serve.')
 	parser.add_argument('-o', '--log-path', default='aradia.log', help='The path of the log file in which to record requests.')
 	parser.add_argument('-p', '--last-post-time-path', default='last_post_time.int', help='The path of the file in which to save the time of the last POST request.')
+	parser.add_argument('-t', '--post-wait', default=POST_WAIT_DEFAULT, type=int, help='The number of seconds that requesters must wait between their POST requests.')
 	parser.add_argument('-e', '--log-headers', nargs='+', default=DEFAULT_HEADERS, help='The list of request headers to log.')
 	parser.add_argument('-r', '--log-request-len', default=200, type=int, help='The length to which requests should be truncated when logging them.')
 	args = parser.parse_args()
@@ -51,11 +53,12 @@ def main():
 			exit(0)
 
 class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
-	def __init__(self, request, client_address, server, live_path='live', scripts_path='scripts', log_path='aradia.log', last_post_time_path='last_post_time.int', log_headers=DEFAULT_HEADERS, log_request_len=200):
+	def __init__(self, request, client_address, server, live_path='live', scripts_path='scripts', log_path='aradia.log', last_post_time_path='last_post_time.int', post_wait=POST_WAIT_DEFAULT, log_headers=DEFAULT_HEADERS, log_request_len=200):
 		self.live_path = live_path
 		self.scripts_path = scripts_path
 		self.log_path = log_path
 		self.last_post_time_path = last_post_time_path
+		self.post_wait = post_wait
 		self.original_dir = os.getcwd()
 		super().__init__(request, client_address, server)
 
@@ -95,8 +98,8 @@ class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
 		with open(self.last_post_time_path) as last_post_time_file:
 			last_post_time = int(last_post_time_file.read().rstrip('\n'))
 		path = os.path.join(self.scripts_path, self.path[1:])
-		if int(time.time()) - last_post_time < 15:
-			self.send_error(HTTPStatus.TOO_MANY_REQUESTS, explain='You must wait a minimum of 15 seconds between POST requests. Use your browser\'s back button and try again after waiting')
+		if int(time.time()) - last_post_time < self.post_wait:
+			self.send_error(HTTPStatus.TOO_MANY_REQUESTS, explain=f'You must wait a minimum of {self.post_wait} seconds between POST requests. Use your browser\'s back button and try again after waiting')
 		elif not path_match:
 			self.send_error(HTTPStatus.FORBIDDEN, explain=f'The paths of scripts may only contain alphanumeric ASCII characters, "{os.path.sep}", and ".py" at the end')
 		elif os.path.isdir(path):
