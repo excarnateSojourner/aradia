@@ -5,7 +5,7 @@ import datetime
 import functools
 import http.server
 from http import HTTPStatus
-import importlib
+import importlib.util
 import os
 import os.path
 import re
@@ -119,7 +119,7 @@ class AradiaRequestHandler(http.server.SimpleHTTPRequestHandler):
 			try:
 				response = module.main(self)
 			except:
-				response = Response(HTTPStatus.INTERNAL_SERVER_ERROR, body='The script called to handle the request raised an exception.')
+				response = Response(HTTPStatus.INTERNAL_SERVER_ERROR, body='The script called to handle the request raised an exception')
 				self.log_message(traceback.format_exc(limit=10))
 			self.send(response)
 
